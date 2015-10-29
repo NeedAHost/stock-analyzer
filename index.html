@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width">
+<style>
+#graphs {
+  font: 10px sans-serif;
+}
+
+.axis path,
+.axis line {
+  fill: none;
+  stroke: #000;
+  shape-rendering: crispEdges;
+}
+
+.x.axis path {
+  display: none;
+}
+
+.line {
+  fill: none;
+  stroke: steelblue;
+  stroke-width: 1.5px;
+}
+
+.area {
+  fill: #8a89a6;
+}
+</style>
+<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.5/css/bootstrap.min.css" integrity="sha512-dTfge/zgoMYpP7QbHy4gWMEGsbsdZeCXz7irItjcC3sPUFtf0kuFbDz/ixG7ArTxmDjLXDmezHubeNikyKGVyQ==" crossorigin="anonymous">
+<body>
+	<div class="container" style="margin: 20px;">
+		<form class="form-inline">
+			<div class="form-group">
+				<input value="0939" type="tel" class="form-control" id="stockName" placeholder="Stock Name">
+				<input value="6" type="number" class="form-control" id="lastNMonth" placeholder="Last N Month">
+				<input value="10" type="number" class="form-control" id="tolerance" placeholder="Tolerance">
+				<input value="10" type="number" class="form-control" id="minNoOfMaxMin" placeholder="Min no of Max/Min">
+				<input class="btn btn-default" type="button" value="Analyze" ontouchstart="runAnalyzer()" onclick="runAnalyzer()">
+			</div>
+		</form>
+	</div>
+	<div id="graphs"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/3.5.5/d3.min.js"></script>
+<script>
+
+var PeriodFinder = function(tolerance, minNoOfMatch) {
+	this.tolerance = tolerance;
+	this.minNoOfMatch = minNoOfMatch;
+	var withinTolerance = function(v1, v2) {
+		var diff = Math.abs(((v1 - v2) / v1));
+		console.log("diff " + diff);
+		return diff <= tolerance;
+	};
+	this.run = function(quote) {
+		var resultSet = [];		
+		var max = quote[0].Close;
+		var min = quote[0].Close;
+		var lastMax = max;
+		var lastMaxIndex = 0;
+		var lastMin = min;
+		var lastMinIndex = 0;
+		var noOfMaxMin = 0;
+		for (var i=0; i<quote.length; i++) {			
+			if (i>0 && i<quote.length-1) {				
+				var cur = quote[i].Close;
+				var date = quote[i].Date;
+				var left = quote[i-1].Close;
+				var right = quote[i+1].Close;				
+				resultSet.push(quote[i]);
+				var findNext = false;
+				if (cur < left && cur < right) {
+					console.warn("min " + cur + " " + date);					
+					findNext = !withinTolerance(min, cur);
+					if (!findNext) {
+						noOfMaxMin++;
+						lastMax = cur;
+						lastMaxIndex = i;
+					} else {
+						resultSet = resultSet.slice(0, lastMaxIndex);
+					}
+				} else if (cur > left && cur > right) {
+					console.warn("max " + cur + " " + date);
+					lastMin = cur;
+					findNext = !withinTolerance(max, cur);
+					if (!findNext) {
+						noOfMaxMin++;
+						lastMin = cur;
+						lastMinIndex = i;
+					} else {
+						resultSet = resultSet.slice(0, lastMinIndex);
+					}
+				} else {
+					console.log("pt " + cur + " " + date);
+				}
+				if (findNext) {
+					console.log("End of period");
+					if (noOfMaxMin >= minNoOfMatch) {
+						console.log("Period: " + JSON.stringify(resultSet));
+						return resultSet;
+					}
+					resultSet = [];
+					noOfMaxMin = 0;
+					max = lastMax;
+					min = lastMin;					
+				}
+			}
+		}
+		return [];
+	};
+};
+
+var IntervalAvg = function(interval) {
+	this.interval = interval;
+	this.run = function(quote) {
+		var resultSet = [];
+		var temp = 0;
+		for (var i=0; i<quote.length; i++) {
+			temp += quote[i].Close;
+			if (((i + 1) % this.interval) == 0) {
+				resultSet.push({
+					Date: quote[i].Date,
+					Close: Math.round(temp / this.interval * 100) / 100
+				});
+				temp = 0;
+			}
+		}
+		return resultSet;
+	};
+	this.describe = function() {
+		return "Find avg of every " + interval + " point";
+	};
+};
+
+var YQLFetcher = function(dataStore) {
+	this.dataStore = dataStore;	
+	this.get = function(stockName, start, end, callback) {	
+		var dataStore = this.dataStore;
+		if (dataStore) {
+			var data = dataStore.get(stockName + ":" + start + ":" + end);
+			if (data)
+				callback(data);
+		}
+		var url = "https://query.yahooapis.com/v1/public/yql?q="
+			+ "select%20Date,%20Close%20from%20yahoo.finance.historicaldata%20"			
+			+ "where%20symbol%20%3D%20%22" + stockName;
+		if (start)
+			url = url + "%22%20and%20startDate%20%3D%20%22"	+ start;
+		if (end)
+			url = url + "%22%20and%20endDate%20%3D%20%22" + end;
+		url = url + "%22&format=json&env=store%3A%2F%2Fdatatables.org%2Falltableswithkeys";
+		d3.json(url, function(error, data) {
+			if (error)
+				console.warn(error);
+			var quote = data.query.results.quote;
+			for (var i=0; i<quote.length; i++) {
+				quote[i].Close = parseFloat(quote[i].Close);
+			}
+			if (dataStore)
+				dataStore.save(stockName + "." + start + "." + end, quote);
+			callback(quote);
+		});
+	};
+};
+
+var DateCal = {
+	formatDate: function(date) {
+		return date.getFullYear() + "-" + (date.getMonth() + 1) + "-" + date.getDate();
+	},
+	getToday: function() {
+		return DateCal.formatDate(new Date());		
+	},
+	getLastNMonth: function(n) {
+		var date = new Date();
+		date.setMonth(date.getMonth() - n);
+		return DateCal.formatDate(date);
+	}	
+};
+
+var Analyzer = function(fetcher, visualizer) {
+	this.fetcher = fetcher;
+	this.visualizer = visualizer;
+	this.filters = [];
+	this.addFilter = function(filter) {
+		this.filters.push(filter);
+	};		
+	this.process = function(stockName, lastNMonth, periodFinder, callback) {
+		this.visualizer.clean();
+		var end = DateCal.getToday();
+		var start = DateCal.getLastNMonth(lastNMonth);
+		var filters = this.filters;
+		this.fetcher.get(stockName, start, end, function(quote) {			
+			if (visualizer)
+				visualizer.render(quote, periodFinder.run(quote));
+			for (var i=0; i<filters.length; i++) {				
+				quote = filters[i].run(quote);	
+				if (visualizer)
+					visualizer.render(quote, periodFinder.run(quote));
+			}
+			callback(quote);
+		});
+	};
+};
+
+var Visualizer = function() {	
+	this.clean = function() {
+		var graphs = document.getElementById("graphs");
+		while (graphs.firstChild) {
+			graphs.removeChild(graphs.firstChild);
+		}
+	};
+	var parseDate = d3.time.format("%Y-%m-%d").parse;	
+	this.render = function(quote, selectedQuote) {
+		var q = [];
+		quote.forEach(function(d) {
+			q.push({
+				date: parseDate(d.Date),
+				close: +d.Close
+			});
+		});	
+		var selectedQ = [];
+		selectedQuote.forEach(function(d) {
+			selectedQ.push({
+				date: parseDate(d.Date),
+				close: +d.Close
+			});
+		});	
+		var maxY = d3.max(q, function(d) { return d.close; });		
+		var minY = d3.min(q, function(d) { return d.close; });
+		var margin = {top: 20, right: 20, bottom: 30, left: 50},
+			width = 960 - margin.left - margin.right,
+			height = 500 - margin.top - margin.bottom;		
+		var x = d3.time.scale()
+			.range([0, width]);
+		var y = d3.scale.linear()
+			.range([height, 0]);
+		var xAxis = d3.svg.axis()
+			.scale(x)
+			.orient("bottom");
+		var yAxis = d3.svg.axis()
+			.scale(y)
+			.orient("left");
+		var line = d3.svg.line()
+			.x(function(d) { return x(d.date); })
+			.y(function(d) { return y(d.close); });		
+		var area = d3.svg.area()
+			.x(function(d) { return x(d.date); })
+			.y0(function(d) { return y(minY); })
+			.y1(function(d) { if (!d) return y(minY); else return y(d.close); });
+		var svg = d3.select("#graphs")
+			.append("svg")
+				.attr("width", width + margin.left + margin.right)
+				.attr("height", height + margin.top + margin.bottom)
+			.append("g")
+				.attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+		x.domain(d3.extent(q, function(d) { return d.date; }));
+		y.domain(d3.extent(q, function(d) { return d.close; }));
+		svg.append("g")
+			.attr("class", "x axis")
+			.attr("transform", "translate(0," + height + ")")
+			.call(xAxis);
+		svg.append("g")
+				.attr("class", "y axis")
+				.call(yAxis)
+			.append("text")
+				.attr("transform", "rotate(-90)")
+				.attr("y", 6)
+				.attr("dy", ".71em")
+				.style("text-anchor", "end")
+				.text("Close Price ($)");
+		svg.append("path")
+			.datum(q)
+			.attr("class", "line")
+			.attr("d", line);
+		svg.append("path")
+			.datum(selectedQ)
+			.attr("class", "area")
+			.attr("d", area);
+	};
+};
+
+var analyzer = new Analyzer(new YQLFetcher(), new Visualizer());
+analyzer.addFilter(new IntervalAvg(2));
+analyzer.addFilter(new IntervalAvg(2));
+
+function runAnalyzer() {
+	var stockName = document.getElementById("stockName").value;
+	if (stockName.length < 5)
+		stockName = stockName + ".HK";
+	var lastNMonth = document.getElementById("lastNMonth").value;
+	var minNoOfMaxMin = document.getElementById("minNoOfMaxMin").value;
+	var tolerance = document.getElementById("tolerance").value / 100;
+	
+	analyzer.process(stockName, lastNMonth, 
+		new PeriodFinder(tolerance, minNoOfMaxMin), 
+			function(quote) {});
+}
+
+</script>
+</body>
