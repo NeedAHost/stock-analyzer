@@ -44,15 +44,14 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/3.5.5/d3.min.js"></script>
 <script>
 
-var PeriodFinder = function(tolerance, minNoOfMatch) {
+var PeriodFinder = function(tolerance) {
 	this.tolerance = tolerance;
-	this.minNoOfMatch = minNoOfMatch;
 	var withinTolerance = function(v1, v2) {
 		var diff = Math.abs(((v1 - v2) / v1));
 		console.log("diff " + diff);
 		return diff <= tolerance;
 	};
-	this.run = function(quote) {
+	this.run = function(quote, minNoOfMaxMin) {
 		var resultSet = [];		
 		var max = quote[0].Close;
 		var min = quote[0].Close;
@@ -95,7 +94,7 @@ var PeriodFinder = function(tolerance, minNoOfMatch) {
 				}
 				if (findNext) {
 					console.log("End of period");
-					if (noOfMaxMin >= minNoOfMatch) {
+					if (noOfMaxMin >= minNoOfMaxMin) {
 						console.log("Period: " + JSON.stringify(resultSet));
 						return resultSet;
 					}
@@ -165,14 +164,20 @@ var YQLFetcher = function(dataStore) {
 
 var DateCal = {
 	formatDate: function(date) {
-		return date.getFullYear() + "-" + (date.getMonth() + 1) + "-" + date.getDate();
+		var dd = date.getDate();
+		if (dd < 10)
+			dd = "0" + dd;
+		var mm = (date.getMonth() + 1).toString();
+		if (mm < 10)
+			mm = "0" + mm;		
+		return date.getFullYear() + "-" + mm + "-" + dd;
 	},
 	getToday: function() {
 		return DateCal.formatDate(new Date());		
 	},
 	getLastNMonth: function(n) {
 		var date = new Date();
-		date.setMonth(date.getMonth() - n);
+		date = new Date(date.getTime() - (1000*60*60*24*30*n));
 		return DateCal.formatDate(date);
 	}	
 };
@@ -184,18 +189,17 @@ var Analyzer = function(fetcher, visualizer) {
 	this.addFilter = function(filter) {
 		this.filters.push(filter);
 	};		
-	this.process = function(stockName, lastNMonth, periodFinder, callback) {
-		this.visualizer.clean();
-		var end = DateCal.getToday();
-		var start = DateCal.getLastNMonth(lastNMonth);
+	this.process = function(stockName, start, end, minNoOfMaxMin, periodFinder, callback) {
+		this.visualizer.clean();		
 		var filters = this.filters;
-		this.fetcher.get(stockName, start, end, function(quote) {			
+		this.fetcher.get(stockName, start, end, function(quote) {
 			if (visualizer)
-				visualizer.render(quote, periodFinder.run(quote));
+				visualizer.render(quote, periodFinder.run(quote, minNoOfMaxMin));
 			for (var i=0; i<filters.length; i++) {				
 				quote = filters[i].run(quote);	
+				minNoOfMaxMin = minNoOfMaxMin / 2;
 				if (visualizer)
-					visualizer.render(quote, periodFinder.run(quote));
+					visualizer.render(quote, periodFinder.run(quote, minNoOfMaxMin));
 			}
 			callback(quote);
 		});
@@ -283,6 +287,8 @@ var analyzer = new Analyzer(new YQLFetcher(), new Visualizer());
 analyzer.addFilter(new IntervalAvg(2));
 analyzer.addFilter(new IntervalAvg(2));
 
+console.log(DateCal.formatDate(new Date(2015, 1, 1)));
+
 function runAnalyzer() {
 	var stockName = document.getElementById("stockName").value;
 	if (stockName.length < 5)
@@ -290,9 +296,11 @@ function runAnalyzer() {
 	var lastNMonth = document.getElementById("lastNMonth").value;
 	var minNoOfMaxMin = document.getElementById("minNoOfMaxMin").value;
 	var tolerance = document.getElementById("tolerance").value / 100;
-	
-	analyzer.process(stockName, lastNMonth, 
-		new PeriodFinder(tolerance, minNoOfMaxMin), 
+	var end = DateCal.getToday();
+	var start = DateCal.getLastNMonth(lastNMonth);
+		
+	analyzer.process(stockName, start, end, minNoOfMaxMin,
+		new PeriodFinder(tolerance), 
 			function(quote) {});
 }
 
